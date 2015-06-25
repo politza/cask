@@ -359,6 +359,37 @@ If BUNDLE is not a package, the error `cask-not-a-package' is signaled."
          (progn ,@body)
        (signal 'cask-not-a-package nil))))
 
+(defmacro cask-destructure-directive (args expr &rest body)
+  "Destructure a directive using ARGS by evaluating EXPR; execute BODY.
+
+Like `cl-destructuring-bind', but gives more meaningful error
+messages."
+  (declare (indent 2)
+           (debug (sexp form body)))
+  (let ((args-checked-p (make-symbol "args-checked-p"))
+        (form (make-symbol "form"))
+        (directive (make-symbol "directive")))
+    `(let* ((,form ,expr)
+            (,directive (car-safe ,form))
+            ,args-checked-p)
+       (condition-case err
+           (cl-destructuring-bind ,args
+               ,form
+             (setq ,args-checked-p t)
+             ,@body)
+         (wrong-number-of-arguments
+          (if (or ,args-checked-p (null ,directive))
+              (signal (car err) (cdr err))
+            (error "Invalid directive: %S, expected %s"
+                   ,form
+                   (cons ,directive (cdr ',args)))))
+         (error
+          (if (null ,directive)
+              (signal (car err) (cdr err))
+            (error "Error reading directive %s: %s"
+                   ,directive
+                   (error-message-string err))))))))
+
 (defun cask--eval (bundle forms &optional scope)
   "Populate BUNDLE by evaluating FORMS in SCOPE.
 
@@ -367,15 +398,15 @@ SCOPE may be nil or 'development."
     (lambda (form)
       (cl-case (car form)
         (source
-         (cl-destructuring-bind (_ name-or-alias &optional url) form
+         (cask-destructure-directive (_ name-or-alias &optional url) form
            (cask-add-source bundle name-or-alias url)))
         (package
-         (cl-destructuring-bind (_ name version description) form
+         (cask-destructure-directive (_ name version description) form
            (setf (cask-bundle-name bundle) (intern name))
            (setf (cask-bundle-version bundle) version)
            (setf (cask-bundle-description bundle) description)))
         (package-file
-         (cl-destructuring-bind (_ filename) form
+         (cask-destructure-directive (_ filename) form
            (let ((package
                   (condition-case err
                       (epl-package-from-file
@@ -384,16 +415,16 @@ SCOPE may be nil or 'development."
                      (error "Unbalanced parens in Package-Requires in file %s" filename)))))
              (cask--from-epl-package bundle package))))
         (depends-on
-         (cl-destructuring-bind (_ name &rest args) form
+         (cask-destructure-directive (_ name &rest args) form
            (when (stringp (car args))
              (push :version args))
            (setq args (plist-put args :scope scope))
            (apply 'cask-add-dependency (append (list bundle (intern name)) args))))
         (files
-         (cl-destructuring-bind (_ &rest patterns) form
+         (cask-destructure-directive (_ &rest patterns) form
            (setf (cask-bundle-patterns bundle) patterns)))
         (development
-         (cl-destructuring-bind (_ . body) form
+         (cask-destructure-directive (_ . body) form
            (cask--eval bundle body 'development)))
         (t
          (error "Unknown directive: %S" form))))))
